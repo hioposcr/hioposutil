@@ -1,4 +1,4 @@
-import { startTransition, useState } from 'react';
+import { startTransition, useEffect, useRef, useState } from 'react';
 import { Toaster, toast } from 'sonner';
 import { AnimatePresence, motion } from 'framer-motion';
 import Header from './components/Header';
@@ -7,6 +7,8 @@ import ManualInputPanel from './components/ManualInputPanel';
 import ReissueSettingsPanel from './components/ReissueSettingsPanel';
 import MdgConfigPanel from './components/MdgConfigPanel';
 import MdgSubmissionPanel from './components/MdgSubmissionPanel';
+import LoginDialog from './components/LoginDialog';
+import SessionWarningDialog from './components/SessionWarningDialog';
 import DocumentSummaryCard from './components/DocumentSummaryCard';
 import CreditNoteSummaryCard from './components/CreditNoteSummaryCard';
 import ComparisonPanel from './components/ComparisonPanel';
@@ -32,6 +34,17 @@ import {
   extractTerminalFromConsecutive,
   suggestNextTerminal,
 } from './utils/consecutive';
+import {
+  clearAuthSession,
+  createAuthSession,
+  extendAuthSession,
+  formatRemainingTime,
+  getSessionRemainingMs,
+  getStoredAuthSession,
+  persistAuthSession,
+  shouldWarnAboutSessionExpiry,
+  type AuthSession,
+} from './utils/authSession';
 import { formatCurrency } from './utils/number';
 import type {
   AppState,
@@ -68,6 +81,16 @@ const INITIAL_MDG_SETTINGS: MdgSettings = {
   tenantId: '',
   password: '',
 };
+
+const INITIAL_LOGIN_FORM = {
+  username: '',
+  password: '',
+};
+
+const INTERNAL_SUPPORT_USERNAME = 'soporte';
+const INTERNAL_SUPPORT_PASSWORD = '1965';
+const SESSION_ACTIVITY_SYNC_MS = 30 * 1000;
+const NEXT_CASE_RESET_DELAY_MS = 2200;
 
 function buildUploadState(
   file: File,
@@ -109,12 +132,25 @@ export default function App() {
   const [mdgErrors, setMdgErrors] = useState<MdgSettingsErrors>({});
   const [mdgSubmission, setMdgSubmission] = useState<MdgSubmissionSuccess | null>(null);
   const [mdgSubmissionError, setMdgSubmissionError] = useState<MdgSubmissionError | null>(null);
+  const [authSession, setAuthSession] = useState<AuthSession | null>(() =>
+    typeof window === 'undefined' ? null : getStoredAuthSession()
+  );
+  const [loginForm, setLoginForm] = useState(INITIAL_LOGIN_FORM);
+  const [loginError, setLoginError] = useState('');
+  const [showSessionWarning, setShowSessionWarning] = useState(false);
+  const [sessionRemainingMs, setSessionRemainingMs] = useState(0);
+  const lastSessionSyncRef = useRef(0);
+  const resetNextCaseTimerRef = useRef<number | null>(null);
+  const authSessionRef = useRef<AuthSession | null>(authSession);
+  const logoutUserRef = useRef<((reason?: 'manual' | 'expired') => void) | null>(null);
+  const warningOpenRef = useRef(false);
 
   const activeOriginalDocument = manualMode ? manualOriginalDocument : xmlOriginalDocument;
   const allInputsReady = Boolean(activeOriginalDocument && rejectedNote);
   const showSummaries = allInputsReady;
   const showComparison = Boolean(comparisonAnalysis);
   const showResult = Boolean(generatedResult);
+  const isAuthenticated = Boolean(authSession);
   const mdgEndpoints = getMdgEndpoints(mdgSettings.environment);
   const currentNoteTerminal = rejectedNote
     ? extractTerminalFromConsecutive(rejectedNote.numeroConsecutivo)
@@ -122,6 +158,41 @@ export default function App() {
   const suggestedTerminal = rejectedNote
     ? suggestNextTerminal(rejectedNote.numeroConsecutivo)
     : '';
+
+  const resetCaseState = (options?: { preserveEnvironment?: boolean }) => {
+    if (resetNextCaseTimerRef.current) {
+      window.clearTimeout(resetNextCaseTimerRef.current);
+      resetNextCaseTimerRef.current = null;
+    }
+
+    const nextMdgSettings = options?.preserveEnvironment
+      ? {
+          ...INITIAL_MDG_SETTINGS,
+          environment: mdgSettings.environment,
+        }
+      : INITIAL_MDG_SETTINGS;
+
+    startTransition(() => {
+      setAppState('idle');
+      setXmlFile(null);
+      setNoteFile(null);
+      setXmlOriginalDocument(null);
+      setManualOriginalDocument(null);
+      setRejectedNote(null);
+      setComparisonAnalysis(null);
+      setCorrectionDraft(null);
+      setGeneratedResult(null);
+      setManualMode(false);
+      setManualForm(INITIAL_MANUAL_FORM);
+      setManualErrors({});
+      setReissueSettings(INITIAL_REISSUE_SETTINGS);
+      setReissueErrors({});
+      setMdgSettings(nextMdgSettings);
+      setMdgErrors({});
+      setMdgSubmission(null);
+      setMdgSubmissionError(null);
+    });
+  };
 
   const resetWorkflow = (nextState: AppState) => {
     startTransition(() => {
@@ -133,6 +204,153 @@ export default function App() {
       setAppState(nextState);
     });
   };
+
+  const logoutUser = (reason: 'manual' | 'expired' = 'manual') => {
+    clearAuthSession();
+    authSessionRef.current = null;
+    warningOpenRef.current = false;
+    lastSessionSyncRef.current = 0;
+    setAuthSession(null);
+    setShowSessionWarning(false);
+    setSessionRemainingMs(0);
+    setLoginError('');
+    setLoginForm(INITIAL_LOGIN_FORM);
+    resetCaseState();
+
+    if (reason === 'expired') {
+      toast.error('La sesión se cerró por inactividad.', {
+        description: 'Vuelve a ingresar para continuar usando la herramienta.',
+      });
+      return;
+    }
+
+    toast.success('Sesión cerrada');
+  };
+
+  const touchSession = (force = false) => {
+    const currentSession = authSessionRef.current;
+
+    if (!currentSession) {
+      return;
+    }
+
+    const now = Date.now();
+
+    if (!force && now - lastSessionSyncRef.current < SESSION_ACTIVITY_SYNC_MS) {
+      return;
+    }
+
+    const nextSession = extendAuthSession(currentSession, now);
+    persistAuthSession(nextSession);
+    authSessionRef.current = nextSession;
+    warningOpenRef.current = false;
+    lastSessionSyncRef.current = now;
+    setAuthSession(nextSession);
+    setShowSessionWarning(false);
+    setSessionRemainingMs(getSessionRemainingMs(nextSession, now));
+  };
+
+  const handleLoginSubmit = () => {
+    const normalizedUsername = loginForm.username.trim().toLowerCase();
+
+    if (
+      normalizedUsername !== INTERNAL_SUPPORT_USERNAME ||
+      loginForm.password !== INTERNAL_SUPPORT_PASSWORD
+    ) {
+      setLoginError('Credenciales inválidas. Verifica el usuario y la contraseña.');
+      return;
+    }
+
+    const nextSession = createAuthSession(INTERNAL_SUPPORT_USERNAME);
+    persistAuthSession(nextSession);
+    authSessionRef.current = nextSession;
+    warningOpenRef.current = false;
+    lastSessionSyncRef.current = Date.now();
+    setAuthSession(nextSession);
+    setShowSessionWarning(false);
+    setSessionRemainingMs(getSessionRemainingMs(nextSession));
+    setLoginError('');
+    setLoginForm(INITIAL_LOGIN_FORM);
+
+    toast.success('Sesión iniciada', {
+      description: 'Acceso interno habilitado para soporte.',
+    });
+  };
+
+  useEffect(() => {
+    authSessionRef.current = authSession;
+  }, [authSession]);
+
+  useEffect(() => {
+    logoutUserRef.current = logoutUser;
+  });
+
+  useEffect(() => {
+    warningOpenRef.current = showSessionWarning;
+  }, [showSessionWarning]);
+
+  useEffect(() => {
+    if (!authSession) {
+      return undefined;
+    }
+
+    const syncSessionStatus = () => {
+      const currentSession = authSessionRef.current;
+
+      if (!currentSession) {
+        return;
+      }
+
+      const remaining = getSessionRemainingMs(currentSession);
+      setSessionRemainingMs(remaining);
+
+      if (remaining <= 0) {
+        logoutUserRef.current?.('expired');
+        return;
+      }
+
+      setShowSessionWarning(shouldWarnAboutSessionExpiry(currentSession));
+    };
+
+    syncSessionStatus();
+    const intervalId = window.setInterval(syncSessionStatus, 1000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [authSession]);
+
+  useEffect(() => {
+    if (!authSession) {
+      return undefined;
+    }
+
+    const handleActivity = () => {
+      touchSession(warningOpenRef.current);
+    };
+
+    const listenerOptions: AddEventListenerOptions = { passive: true };
+
+    window.addEventListener('pointerdown', handleActivity, listenerOptions);
+    window.addEventListener('keydown', handleActivity);
+    window.addEventListener('scroll', handleActivity, listenerOptions);
+    window.addEventListener('touchstart', handleActivity, listenerOptions);
+
+    return () => {
+      window.removeEventListener('pointerdown', handleActivity);
+      window.removeEventListener('keydown', handleActivity);
+      window.removeEventListener('scroll', handleActivity);
+      window.removeEventListener('touchstart', handleActivity);
+    };
+  }, [authSession]);
+
+  useEffect(() => {
+    return () => {
+      if (resetNextCaseTimerRef.current) {
+        window.clearTimeout(resetNextCaseTimerRef.current);
+      }
+    };
+  }, []);
 
   const syncManualDocument = (nextForm: ManualDocumentForm, nextManualMode = manualMode) => {
     const errors = validateManualDocument(nextForm);
@@ -462,8 +680,17 @@ export default function App() {
 
       toast.success('Documento enviado a MDG', {
         id: 'mdg-send',
-        description: responseLabel,
+        description: `${responseLabel}. Preparando el siguiente caso…`,
       });
+
+      if (resetNextCaseTimerRef.current) {
+        window.clearTimeout(resetNextCaseTimerRef.current);
+      }
+
+      resetNextCaseTimerRef.current = window.setTimeout(() => {
+        resetCaseState({ preserveEnvironment: true });
+        toast.success('Formulario limpio para el siguiente envío');
+      }, NEXT_CASE_RESET_DELAY_MS);
     } catch (error) {
       const fallbackError: MdgSubmissionError =
         error instanceof MdgApiError
@@ -503,7 +730,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50">
       <Toaster position="top-right" richColors closeButton />
-      <Header />
+      <Header currentUser={authSession?.username ?? null} onLogout={() => logoutUser('manual')} />
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8 space-y-6">
         <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
@@ -682,6 +909,32 @@ export default function App() {
 
         <WarningsCard />
       </main>
+
+      {!isAuthenticated && (
+        <LoginDialog
+          username={loginForm.username}
+          password={loginForm.password}
+          error={loginError}
+          onChange={(field, value) => {
+            setLoginForm((current) => ({
+              ...current,
+              [field]: value,
+            }));
+            if (loginError) {
+              setLoginError('');
+            }
+          }}
+          onSubmit={handleLoginSubmit}
+        />
+      )}
+
+      {isAuthenticated && showSessionWarning && (
+        <SessionWarningDialog
+          remainingLabel={formatRemainingTime(sessionRemainingMs)}
+          onStayLoggedIn={() => touchSession(true)}
+          onLogout={() => logoutUser('manual')}
+        />
+      )}
     </div>
   );
 }
