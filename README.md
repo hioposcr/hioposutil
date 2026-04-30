@@ -1,6 +1,6 @@
 # hioposutil
 
-Herramienta web interna para corregir notas de crédito electrónicas rechazadas por diferencias de redondeo frente al documento fiscal original y reenviarlas a MDG sin exponer endpoints en el frontend.
+Herramienta web interna para corregir notas de crédito electrónicas rechazadas por diferencias de redondeo frente al documento fiscal original, regenerar su información de reemisión y reenviarlas a MDG sin exponer endpoints directamente en el frontend.
 
 ## Objetivo
 
@@ -13,6 +13,7 @@ La aplicación permite:
 - regenerar fecha, consecutivo y clave usando una nueva terminal
 - exportar JSON y XML corregidos
 - reenviar el comprobante a MDG usando una Netlify Function para evitar CORS
+- operar con login interno y sesión persistente para personal de soporte
 
 ## Stack
 
@@ -26,6 +27,9 @@ La aplicación permite:
 
 ## Funcionalidades principales
 
+- Login interno obligatorio antes de usar la herramienta
+- Sesión persistente en navegador con cierre manual y expiración por inactividad
+- Advertencia previa al vencimiento de sesión
 - Soporte de documento original por XML o ingreso manual
 - Soporte de nota de crédito rechazada en JSON MDG o XML
 - Parseo robusto con validaciones y manejo de errores
@@ -34,12 +38,14 @@ La aplicación permite:
 - Exportación de `JSON` y `XML`
 - Envío a MDG por ambiente `Testing` o `Producción`
 - Uso de `tenantId` y `password` por cliente sin dejarlos fijos en el sitio
+- Limpieza automática del caso después de un envío exitoso a MDG
 
 ## Arquitectura
 
 ```mermaid
 flowchart LR
-    U[Usuario soporte] --> FE[Frontend React]
+    U[Usuario soporte] --> L[Login interno]
+    L --> FE[Frontend React]
     FE --> P1[Parseo XML original]
     FE --> P2[Parseo nota JSON o XML]
     P1 --> A[Análisis de diferencias]
@@ -50,7 +56,27 @@ flowchart LR
     NF --> T[Token MDG]
     T --> E[Emisión MDG]
     E --> FE
-    FE --> U
+    FE --> C[Limpiar caso exitoso]
+    C --> U
+```
+
+## Flujo de autenticación y sesión
+
+```mermaid
+flowchart TD
+    A[Apertura de la app] --> B[Mostrar login]
+    B --> C{Credenciales válidas?}
+    C -- No --> D[Mostrar error]
+    D --> B
+    C -- Sí --> E[Guardar sesión local]
+    E --> F[Habilitar herramienta]
+    F --> G[Monitorear actividad]
+    G --> H{Inactividad prolongada?}
+    H -- No --> G
+    H -- Sí --> I[Mostrar advertencia]
+    I --> J{Usuario sigue activo?}
+    J -- Sí --> G
+    J -- No --> K[Cerrar sesión]
 ```
 
 ## Flujo de corrección
@@ -79,6 +105,7 @@ sequenceDiagram
     participant NF as Netlify Function
     participant MDG as API MDG
 
+    S->>FE: Inicia sesión y carga archivos
     S->>FE: Ingresa tenantId, password y ambiente
     S->>FE: Presiona Enviar a MDG
     FE->>NF: POST /.netlify/functions/mdg-submit
@@ -89,6 +116,7 @@ sequenceDiagram
     MDG-->>NF: Respuesta de emisión
     NF-->>FE: Resultado estructurado o error
     FE-->>S: Muestra éxito o detalle del error
+    FE-->>S: Limpia el formulario si el envío fue exitoso
 ```
 
 ## Estructura relevante
@@ -149,18 +177,21 @@ Importante:
 
 ## Paso a paso de uso
 
-1. Cargar el XML del documento original.
-2. Cargar la nota de crédito rechazada en JSON o XML.
-3. Revisar los resúmenes generados por la app.
-4. Configurar la nueva terminal de reemisión.
-5. Presionar `Analizar documento`.
-6. Presionar `Recalcular ajuste`.
-7. Presionar `Generar versión corregida`.
-8. Revisar el preview JSON/XML.
-9. Opcionalmente exportar archivos.
-10. Seleccionar ambiente `Testing` o `Producción`.
-11. Ingresar `tenantId` y `password` del cliente.
-12. Presionar `Enviar a MDG`.
+1. Ingresar con el login interno de soporte.
+2. Cargar el XML del documento original.
+3. Cargar la nota de crédito rechazada en JSON o XML.
+4. Revisar los resúmenes generados por la app.
+5. Configurar la nueva terminal de reemisión.
+6. Presionar `Analizar documento`.
+7. Presionar `Recalcular ajuste`.
+8. Presionar `Generar versión corregida`.
+9. Revisar el preview JSON/XML.
+10. Opcionalmente exportar archivos.
+11. Seleccionar ambiente `Testing` o `Producción`.
+12. Ingresar `tenantId` y `password` del cliente.
+13. Presionar `Enviar a MDG`.
+14. Si el envío es exitoso, la app limpia el caso actual para preparar el siguiente.
+15. Cerrar sesión manualmente desde el encabezado cuando corresponda.
 
 ## Despliegue en Netlify
 
@@ -199,7 +230,10 @@ El archivo [netlify.env.example](./netlify.env.example) incluye esos nombres com
 - El frontend no llama directamente a MDG, por lo que se evita el problema de CORS.
 - Los endpoints de MDG no se muestran en la interfaz.
 - El `tenantId` y `password` del cliente se usan para la operación actual y no quedan como configuración estática del sitio.
-- Si más adelante se requiere mayor seguridad, el siguiente paso recomendado es reemplazar captura manual por almacenamiento seguro de credenciales por cliente.
+- La herramienta tiene login interno obligatorio antes de habilitar las acciones de negocio.
+- La sesión permanece disponible mientras exista actividad del usuario y se invalida por inactividad prolongada.
+- Existe advertencia de vencimiento de sesión antes del cierre automático.
+- Si más adelante se requiere mayor seguridad, el siguiente paso recomendado es reemplazar el login fijo y la captura manual por autenticación real y almacenamiento seguro de credenciales por cliente.
 
 ## Consideraciones fiscales
 
@@ -230,6 +264,14 @@ Revisar:
 - ambiente correcto
 - estructura final del documento
 - respuesta mostrada en el panel de error
+
+### La sesión se cerró sola
+
+Revisar si:
+
+- el usuario estuvo inactivo por un periodo prolongado
+- la advertencia de sesión fue ignorada
+- se limpió almacenamiento del navegador
 
 ## Validaciones realizadas
 
