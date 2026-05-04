@@ -1,473 +1,382 @@
-# Documento de Configuración
+# Manual de uso de hioposutil
 
-## Control de Versiones
+## Control de versiones
 
 | Versión | Fecha de elaboración | Descripción |
 | --- | --- | --- |
-| 1.0 | 15/04/2026 | Creación de la guía en su primera versión. |
-| 1.1 | 04/05/2026 | Se agrega módulo de reenvío masivo, paginación de cola y envío por lotes con token reutilizado. |
+| 1.0 | 15/04/2026 | Creación inicial del documento. |
+| 1.1 | 04/05/2026 | Conversión del documento a manual operativo orientado a soporte. |
 
-## Datos Generales
+## Datos generales
 
 | Campo | Valor |
 | --- | --- |
-| Área / Servicio / Unidad propietaria del documento | Departamento de Ingeniería |
+| Área propietaria | Departamento de Ingeniería |
+| Nombre de la herramienta | hioposutil |
+| Tipo de documento | Manual de uso |
+| Público objetivo | Soporte y usuarios operativos autorizados |
 | Elaborado por | Felipe Alvarez |
 | Aprobado por | Ricardo Plaz |
-| Fecha de aprobación | 15/04/2026 |
-| Nombre del sistema | hioposutil |
-| Tipo de solución | Herramienta web interna |
-| Entorno objetivo | Netlify + Netlify Functions |
-
-## Contenido
-
-1. [Introducción](#introducción)
-2. [Objetivo del sistema](#objetivo-del-sistema)
-3. [Arquitectura general](#arquitectura-general)
-4. [Prerrequisitos](#prerrequisitos)
-5. [Configuración técnica](#configuración-técnica)
-6. [Uso del sistema](#uso-del-sistema)
-7. [Módulo de reenvío masivo](#módulo-de-reenvío-masivo)
-8. [Proceso de envío a MDG](#proceso-de-envío-a-mdg)
-9. [Autenticación interna](#autenticación-interna)
-10. [Glosario de términos](#glosario-de-términos)
-11. [Versionamiento](#versionamiento)
-12. [FAQ y solución de errores comunes](#faq-y-solución-de-errores-comunes)
-
-## Introducción
-
-Este documento describe el funcionamiento, configuración y operación de la herramienta interna `hioposutil`, desarrollada para corregir notas de crédito electrónicas rechazadas por diferencias de redondeo respecto al documento original y reenviarlas posteriormente a MDG.
-
-El sistema fue diseñado para ser utilizado por personal de soporte interno, con una interfaz web controlada, autenticación interna simple y un flujo asistido para:
-
-- cargar documentos originales
-- analizar la nota rechazada
-- recalcular montos permitidos
-- regenerar datos fiscales necesarios
-- exportar el resultado corregido
-- reenviar el comprobante a MDG mediante una Netlify Function
-- reprocesar lotes completos de XML con numeración secuencial
-
-La solución evita problemas de CORS al no realizar llamadas directas desde el navegador hacia MDG.
-
-## Objetivo del sistema
-
-El objetivo principal del sistema es automatizar el proceso de corrección de notas de crédito electrónicas que son rechazadas por Hacienda o por MDG cuando el total de la nota supera al documento original debido a diferencias pequeñas de redondeo.
-
-La herramienta permite:
-
-- tomar como fuente de verdad el XML del documento original
-- aceptar una nota rechazada en JSON o XML
-- detectar si el total de la nota es mayor al permitido
-- ajustar el total para dejarlo entre 1 y 2 colones por debajo del original cuando corresponde
-- generar una nueva fecha, un nuevo consecutivo y una nueva clave usando una terminal definida por soporte
-- reenviar el comprobante a MDG de forma controlada
-- cargar lotes de XML para reenvío masivo
-- renumerar documentos secuencialmente a partir de un número inicial
-- reutilizar un mismo token MDG por lote interno para reducir presión sobre el servicio
-
-## Arquitectura general
-
-### Arquitectura funcional
-
-```mermaid
-flowchart LR
-    U[Usuario de soporte] --> LOGIN[Login interno]
-    LOGIN --> FE[Frontend React]
-    FE --> MOD{Selección de módulo}
-    MOD --> XML[Corrección individual]
-    MOD --> BULK[Reenvío masivo]
-    XML --> NOTE[Parser nota JSON o XML]
-    XML --> COMP[Comparación de montos]
-    NOTE --> COMP
-    COMP --> ADJ[Servicio de ajuste]
-    ADJ --> PREV[Preview y exportación]
-    BULK --> MASS[Parseo múltiple + renumeración]
-    MASS --> FN[Netlify Function mdg-submit]
-    PREV --> FN
-    FN --> MDG[API MDG]
-    MDG --> FN
-    FN --> FE
-    FE --> U
-```
-
-### Flujo de proceso
-
-```mermaid
-flowchart TD
-    A[Subir XML original] --> B[Subir nota rechazada]
-    B --> C[Analizar]
-    C --> D{Total de nota supera al original?}
-    D -- No --> E[Sin ajuste de monto]
-    D -- Sí --> F[Aplicar ajuste por redondeo]
-    F --> G[Recalcular líneas e impuestos]
-    E --> H[Regenerar fecha, consecutivo y clave]
-    G --> H
-    H --> I[Generar resultado corregido]
-    I --> J[Exportar JSON/XML]
-    I --> K[Enviar a MDG]
-```
-
-### Flujo de reenvío masivo
-
-```mermaid
-flowchart TD
-    A[Subir múltiples XML] --> B[Validar XML]
-    B --> C[Definir nueva terminal]
-    C --> D[Definir número inicial]
-    D --> E[Definir pausa entre 300 y 500 ms]
-    E --> F[Preparar lote]
-    F --> G[Renumerar consecutivos]
-    G --> H[Regenerar clave y fecha]
-    H --> I[Construir payload MDG]
-    I --> J[Dividir en lotes internos]
-    J --> K[Solicitar un token por lote]
-    K --> L[Enviar documentos con el mismo token]
-    L --> M[Actualizar cola paginada]
-```
-
-## Prerrequisitos
-
-Para utilizar y desplegar el sistema se requiere:
-
-1. Node.js 18 o superior.
-2. npm instalado.
-3. Acceso al repositorio GitHub del proyecto.
-4. Cuenta en Netlify con acceso al equipo `HIOPOS`.
-5. Credenciales MDG válidas por cliente:
-   - `tenantId`
-   - `password`
-6. Navegador moderno para uso del sistema.
-
-## Configuración técnica
-
-### Stack tecnológico
-
-- Vite
-- React
-- TypeScript
-- Tailwind CSS
-- Framer Motion
-- Sonner
-- Netlify Functions
-
-### Estructura relevante
-
-```text
-src/
-  components/
-  parsers/
-  services/
-  utils/
-  types/
-netlify/
-  functions/
-    mdg-submit.mjs
-netlify.toml
-package.json
-```
 
-### Componentes y servicios agregados para reenvío masivo
+## Propósito del manual
 
-- `src/components/ModuleSwitcher.tsx`
-- `src/components/BulkUploadPanel.tsx`
-- `src/components/BulkReissueSettingsPanel.tsx`
-- `src/components/BulkQueuePanel.tsx`
-- `src/components/BulkResendModule.tsx`
-- `src/services/bulkResendService.ts`
-- `src/utils/mdgValidation.ts`
+Este manual explica cómo utilizar `hioposutil` en el trabajo diario de soporte.
 
-### Configuración de build en Netlify
+Su objetivo es que cualquier persona autorizada pueda aprender a usar la herramienta sin necesidad de conocimientos técnicos, siguiendo un flujo claro para:
 
-| Campo | Valor |
-| --- | --- |
-| Branch to deploy | `main` |
-| Base directory | vacío |
-| Build command | `npm run build` |
-| Publish directory | `dist` |
-| Functions directory | `netlify/functions` |
+- cargar documentos
+- revisar la información generada por el sistema
+- corregir comprobantes rechazados por redondeo
+- reenviar comprobantes a MDG
+- procesar lotes grandes de XML de forma ordenada
 
-### Scripts disponibles
+## ¿Qué resuelve la herramienta?
 
-| Script | Descripción |
-| --- | --- |
-| `npm run dev` | Inicia Vite en local |
-| `npm run dev:netlify` | Inicia Netlify Dev con Functions |
-| `npm run build` | Genera build de producción |
-| `npm run lint` | Ejecuta ESLint |
-| `npm run typecheck` | Valida tipos TypeScript |
-| `npm run preview` | Previsualiza el build |
+`hioposutil` fue creada para ayudar cuando un comprobante electrónico necesita ser corregido o reenviado.
 
-## Uso del sistema
+La herramienta cubre dos necesidades principales:
 
-El flujo operativo del sistema consta de los siguientes pasos:
+### Corrección individual
 
-### Paso 1 — Ingreso al sistema
+Se utiliza cuando un documento fue rechazado y se necesita revisar un caso puntual, corregir montos y generar una nueva versión lista para exportación o envío.
 
-El usuario debe iniciar sesión con las credenciales internas:
+### Reenvío masivo
 
-| Campo | Valor |
-| --- | --- |
-| Usuario | `soporte` |
-| Contraseña | `1965` |
+Se utiliza cuando se deben reprocesar muchos XML en la misma operación, aplicando una nueva terminal y una numeración secuencial.
 
-La sesión:
+## ¿Quién debe usarla?
 
-- queda activa en caché del navegador
-- puede cerrarse manualmente
-- vence tras 5 horas de inactividad
-- muestra advertencia antes del vencimiento
+La herramienta está pensada para:
 
-### Paso 2 — Carga del documento original
+- personal de soporte
+- usuarios operativos autorizados
+- personas encargadas de atender incidencias de documentos electrónicos
 
-El usuario puede:
+No está pensada como herramienta de desarrollo ni como reemplazo del análisis fiscal o contable.
 
-- cargar un XML original, o
-- ingresar manualmente datos mínimos del documento base
+## Requisitos para operar
 
-Datos relevantes tomados del documento original:
+Antes de usar la herramienta, la persona debe contar con:
 
-- clave
-- número consecutivo
-- fecha de emisión
-- tipo de documento
-- total comprobante
-- impuestos
-- otros cargos
+- acceso autorizado al sistema
+- archivos válidos del caso a procesar
+- credenciales MDG del cliente correspondiente
+- criterio claro sobre si el caso debe tratarse como corrección individual o como reenvío masivo
 
-### Paso 3 — Carga de la nota rechazada
+## Ingreso al sistema
 
-El sistema acepta:
+Al abrir la herramienta:
 
-- JSON requerido por MDG
-- XML de nota de crédito
+1. Se muestra la pantalla de acceso.
+2. La persona debe iniciar sesión con las credenciales internas autorizadas.
+3. Una vez dentro, puede trabajar normalmente en cualquiera de los módulos.
 
-### Paso 4 — Análisis
+### Comportamiento de la sesión
 
-El usuario presiona `Analizar documento`.
+- la sesión se conserva mientras exista actividad
+- si la persona deja de usar la herramienta durante un tiempo prolongado, la sesión puede expirar
+- antes de que expire, el sistema puede mostrar una advertencia
+- también es posible cerrar sesión manualmente
 
-El sistema:
+## Recorrido de la pantalla principal
 
-- compara total original contra total de la nota
-- determina la diferencia
-- indica si la nota supera o no el monto permitido
+La pantalla principal está organizada para que el flujo sea simple y repetible.
 
-### Paso 5 — Configuración de reemisión
+### 1. Selector de módulo
 
-El usuario debe indicar una nueva terminal para:
+Permite escoger entre:
 
-- generar un nuevo consecutivo
-- generar una nueva clave
+- `Corrección individual`
+- `Reenvío masivo`
 
-La terminal:
+### 2. Configuración MDG
 
-- debe tener 5 dígitos
-- no debe ser igual a la terminal original
+Permite definir:
 
-### Paso 6 — Recálculo
+- ambiente `Testing` o `Producción`
+- `tenantId`
+- `password`
 
-El usuario presiona `Recalcular ajuste`.
+### 3. Área de trabajo
 
-El sistema:
+Aquí se cargan los archivos, se ejecutan las acciones y se revisan los resultados.
 
-- intenta reducir la nota por otros cargos o líneas de detalle
-- actualiza impuestos y resumen
-- busca dejar la nota entre 1 y 2 colones por debajo del original
+## Módulo de corrección individual
 
-### Paso 7 — Generación de resultado
+Este módulo se utiliza cuando el caso corresponde a un solo documento.
 
-El usuario presiona `Generar versión corregida`.
+### Cuándo usarlo
 
-El sistema genera:
+Utilice este módulo cuando:
 
-- JSON corregido
-- XML corregido
-- preview en pantalla
+- exista una nota de crédito rechazada
+- se requiera comparar el documento rechazado contra el documento original
+- se necesite recalcular el monto permitido
+- se deba generar una nueva versión corregida
 
-### Paso 8 — Envío a MDG
+### Archivos necesarios
 
-El usuario:
+Normalmente se requieren:
 
-- selecciona ambiente `Testing` o `Producción`
-- ingresa `tenantId`
-- ingresa `password`
-- presiona `Enviar a MDG`
+- XML del documento original
+- nota rechazada en JSON o XML
 
-Si el envío es exitoso:
+### Paso a paso
 
-- se muestra la respuesta de MDG
-- el formulario se limpia automáticamente
-- el sistema queda listo para procesar el siguiente caso
+1. Ingresar al módulo `Corrección individual`.
+2. Cargar el XML del documento original.
+3. Cargar la nota rechazada.
+4. Revisar el resumen que aparece en pantalla.
+5. Completar la nueva terminal.
+6. Presionar `Analizar documento`.
+7. Presionar `Recalcular ajuste`.
+8. Presionar `Generar versión corregida`.
+9. Revisar el resultado.
+10. Exportar o enviar a MDG.
+
+### ¿Qué hace cada acción?
+
+#### Analizar documento
+
+Revisa el documento original y la nota cargada para identificar diferencias relevantes.
+
+#### Recalcular ajuste
+
+Aplica la corrección necesaria cuando el documento rechazado supera el monto permitido.
+
+#### Generar versión corregida
+
+Prepara la nueva versión del comprobante para revisión, descarga o envío.
+
+#### Enviar a MDG
+
+Remite el documento generado utilizando la configuración MDG ingresada por la persona.
+
+### Resultado esperado
+
+Al finalizar este flujo, la persona podrá ver:
+
+- nueva clave
+- nuevo consecutivo
+- nueva fecha de emisión
+- total corregido
+- resumen del ajuste aplicado
+
+Cuando el envío es exitoso, la pantalla puede limpiarse automáticamente para facilitar el siguiente caso.
 
 ## Módulo de reenvío masivo
 
-El sistema ahora incorpora un segundo flujo de trabajo orientado a soporte operativo cuando se deben reprocesar varios comprobantes XML en serie.
+Este módulo se utiliza cuando se deben reprocesar varios XML en la misma operación.
 
-### Objetivo del módulo
+### Cuándo usarlo
 
-Permitir que una persona:
+Utilice este módulo cuando:
 
-- cargue múltiples XML
-- defina una nueva terminal
-- defina un número inicial para la secuencia
-- decida si regenerar o no el segmento de seguridad de la clave
-- envíe el lote a MDG de forma controlada
+- se necesita reenviar muchos comprobantes
+- se requiere cambiar terminal
+- se desea iniciar una nueva secuencia numérica
+- se debe procesar un volumen grande de XML con control de resultados
 
-### Reglas operativas del módulo
+### Información requerida
 
-- el orden del lote corresponde al orden en que se cargan los XML
-- el primer documento toma el número inicial indicado
-- los siguientes avanzan secuencialmente de uno en uno
-- la cola se muestra paginada para soportar cientos o miles de registros
-- la pausa entre emisiones se configura entre `300` y `500 ms`
-- el lote se divide en grupos internos de hasta `10` documentos
-- cada grupo interno solicita un solo token y reutiliza ese token en sus emisiones
+#### XML del lote
 
-### Beneficios
+Son los documentos que se van a reprocesar.
 
-- reduce la cantidad de solicitudes de token a MDG
-- disminuye la probabilidad de castigo o saturación
-- facilita operar lotes grandes desde una sola interfaz
-- deja trazabilidad visual por documento en la cola
+#### Nueva terminal
 
-## Proceso de envío a MDG
+Es la terminal que se usará para generar los nuevos consecutivos y claves.
 
-El sistema no llama a MDG directamente desde el navegador.
+#### Número inicial
 
-### Flujo técnico
+Es el punto de partida de la numeración del lote.
 
-```mermaid
-sequenceDiagram
-    participant Soporte
-    participant Frontend
-    participant Function as Netlify Function
-    participant MDG
+Ejemplo:
 
-    Soporte->>Frontend: Ingresa tenantId/password + ambiente
-    Frontend->>Function: POST mdg-submit
-    Function->>MDG: Solicita token
-    MDG-->>Function: access_token
-    loop Por lote interno
-        Function->>MDG: Envía documento
-        MDG-->>Function: Respuesta
-        Function->>Function: Espera 300-500 ms
-    end
-    Function-->>Frontend: Resultado individual o consolidado
-    Frontend-->>Soporte: Visualización del estado
-```
+- si el número inicial es `1`
+- el primer documento quedará con `0000000001`
+- el segundo con `0000000002`
+- el tercero con `0000000003`
 
-### Beneficios del enfoque
+#### Pausa entre envíos
 
-- evita CORS
-- no expone endpoints en pantalla
-- permite usar credenciales distintas por cliente
-- deja posibilidad de usar variables de entorno como fallback
-- reduce la cantidad de solicitudes de token en lotes masivos
-- introduce pacing controlado para proteger el servicio externo
+Permite espaciar las emisiones hacia MDG.
 
-## Autenticación interna
+Rango permitido:
 
-La herramienta posee una autenticación interna básica para evitar acceso casual al sistema.
+- mínimo `300 ms`
+- máximo `500 ms`
 
-### Comportamiento de sesión
+#### Regenerar clave de seguridad
 
-- login obligatorio al abrir la aplicación
-- persistencia local hasta cierre manual o inactividad
-- advertencia visual antes del vencimiento
-- renovación de la sesión mientras la persona siga usando la app
+Si esta opción está activa, la herramienta vuelve a construir el tramo de seguridad de la clave durante el reprocesamiento.
 
-### Cierre de sesión
+### Paso a paso
 
-Se puede cerrar sesión desde el header mediante el botón `Cerrar sesión`.
+1. Ingresar al módulo `Reenvío masivo`.
+2. Cargar los XML del lote.
+3. Verificar que los archivos hayan sido aceptados por la herramienta.
+4. Ingresar la nueva terminal.
+5. Ingresar el número inicial.
+6. Definir la pausa entre envíos.
+7. Activar o desactivar la regeneración de clave de seguridad.
+8. Completar la configuración MDG.
+9. Presionar `Preparar lote`.
+10. Revisar la cola de procesamiento.
+11. Presionar `Enviar lote a MDG`.
+12. Revisar los resultados finales.
 
-## Glosario de términos
+### Cola de procesamiento
+
+La cola muestra cada documento del lote con su estado individual.
+
+Estados disponibles:
+
+- `Listo`
+- `Procesando`
+- `Enviado`
+- `Con error`
+
+Cuando el lote contiene muchos documentos, la cola se presenta con paginación para hacer más fácil la revisión.
+
+### Cómo se comporta el envío masivo
+
+El sistema no envía todos los documentos al mismo tiempo.
+
+Para cuidar la estabilidad operativa:
+
+- los documentos se procesan de forma controlada
+- se utiliza una pausa entre emisiones
+- se reutiliza el token dentro de los grupos internos del lote
+
+Esto reduce la presión sobre MDG y mejora la continuidad del procesamiento.
+
+## Configuración MDG
+
+La configuración MDG es necesaria tanto para la corrección individual como para el reenvío masivo.
+
+### Ambiente
+
+Debe seleccionarse uno de los siguientes:
+
+- `Testing`
+- `Producción`
+
+### Tenant ID
+
+Corresponde al identificador del cliente en MDG.
+
+### Password
+
+Corresponde a la contraseña del cliente en MDG.
+
+### Recomendaciones antes de enviar
+
+Antes de presionar el botón de envío, confirme:
+
+- que el ambiente sea el correcto
+- que el `tenantId` corresponda al cliente correcto
+- que la contraseña esté vigente
+- que el documento o lote ya haya sido revisado visualmente
+
+## Mensajes, estados y resultados
+
+La herramienta informa claramente lo que está ocurriendo para que soporte pueda actuar con rapidez.
+
+### Mensajes de éxito
+
+Indican, por ejemplo, que:
+
+- el archivo fue cargado correctamente
+- el análisis fue completado
+- la versión corregida fue generada
+- el documento fue enviado a MDG
+
+### Mensajes de error
+
+Pueden indicar, por ejemplo, que:
+
+- el archivo no es válido
+- el formato no corresponde a lo esperado
+- faltan datos obligatorios
+- las credenciales MDG son incorrectas
+- MDG rechazó el documento
+
+### Resultados visibles
+
+Según el módulo utilizado, la herramienta puede mostrar:
+
+- resumen del documento
+- comparación de montos
+- total corregido
+- nueva clave
+- nuevo consecutivo
+- resultados documento por documento dentro del lote
+
+## Buenas prácticas de operación
+
+Para trabajar de forma segura y ordenada, se recomienda:
+
+- verificar siempre el ambiente antes de enviar
+- usar una terminal correcta para el nuevo proceso
+- comenzar en `Testing` si el caso requiere validación previa
+- revisar el resumen antes de enviar
+- usar pausas conservadoras cuando el lote sea grande
+- identificar primero los errores antes de reintentar documentos
+
+## Preguntas frecuentes
+
+### ¿Qué pasa si el XML no carga?
+
+La herramienta mostrará un mensaje indicando que el archivo no pudo ser interpretado o que no cumple el formato esperado.
+
+### ¿La herramienta corrige cualquier tipo de rechazo?
+
+No. Está orientada principalmente a corrección por diferencias de redondeo y a reprocesamiento operativo de documentos.
+
+### ¿Qué pasa si MDG devuelve error?
+
+El sistema mostrará el resultado recibido para que la persona pueda revisar el caso, las credenciales o la información del documento.
+
+### ¿Se puede enviar un lote grande?
+
+Sí. La herramienta está preparada para trabajar con lotes amplios y ofrece una cola paginada para revisar el avance.
+
+### ¿Todos los documentos del lote se envían al mismo tiempo?
+
+No. Se procesan de manera controlada.
+
+### ¿Qué ocurre si un documento falla dentro del lote?
+
+Ese documento quedará marcado con error y podrá revisarse de forma posterior.
+
+### ¿Se puede volver a intentar?
+
+Sí. La revisión de resultados permite identificar qué documentos necesitan una nueva gestión.
+
+## Glosario
 
 | Término | Definición |
 | --- | --- |
-| XML | Formato estructurado de intercambio de datos |
-| JSON | Formato estructurado de datos usado por APIs |
-| Nota de crédito | Documento electrónico de corrección o anulación |
-| Clave | Identificador fiscal del comprobante electrónico |
-| Consecutivo | Secuencia fiscal del documento |
-| Terminal | Segmento configurable usado para regenerar consecutivo y clave |
-| MDG | Plataforma intermediaria de emisión |
-| Function | Función serverless usada para operar del lado servidor |
-| CORS | Restricción del navegador para llamadas entre dominios |
-| Lote interno | Grupo de hasta 10 documentos procesados con el mismo token |
-| Pacing | Pausa controlada entre solicitudes consecutivas |
+| XML | Archivo del comprobante electrónico |
+| JSON | Formato de intercambio de información |
+| Clave | Identificador electrónico del comprobante |
+| Consecutivo | Número secuencial del documento |
+| Terminal | Segmento usado para regenerar datos del documento |
+| MDG | Plataforma utilizada para la remisión del comprobante |
+| Lote | Conjunto de documentos procesados en una misma operación |
+| Cola | Lista que muestra el estado de cada documento |
 
-## Versionamiento
+## Cierre
 
-El proyecto sigue un versionamiento funcional incremental.
+Este manual está orientado al aprendizaje y uso diario de `hioposutil` por parte del personal de soporte y usuarios operativos.
 
-| Tipo de cambio | Impacto |
-| --- | --- |
-| Ajustes visuales menores | Compatible |
-| Nuevos campos de apoyo | Compatible |
-| Nuevas reglas de validación | Compatible con revisión operativa |
-| Cambios en estructura del JSON de salida | Requiere validación contra MDG |
-| Cambios en flujo de autenticación | Requiere aviso al equipo de soporte |
-| Cambios en lotes internos o pacing | Requiere validación operativa con MDG |
+Para GitBook Sync, este documento ya puede utilizarse como una página principal de manual. Si más adelante se desea una experiencia más ordenada, se recomienda dividirlo en varias páginas, por ejemplo:
 
-## FAQ y solución de errores comunes
+- Introducción
+- Corrección individual
+- Reenvío masivo
+- Configuración MDG
+- Preguntas frecuentes
 
-### ¿Por qué la app no llama directo a MDG?
-
-Porque el navegador bloquearía la solicitud por CORS. Por eso el envío se hace mediante una Netlify Function.
-
-### ¿Qué pasa si las credenciales del cliente son incorrectas?
-
-La Function obtendrá un error al solicitar el token o al emitir el comprobante y el sistema mostrará el detalle en pantalla.
-
-### ¿Qué pasa si el total de la nota ya está dentro del rango permitido?
-
-El sistema puede regenerar la identidad fiscal sin aplicar un ajuste de monto.
-
-### ¿Qué pasa si la sesión vence?
-
-El sistema advertirá antes del vencimiento y cerrará la sesión si no hay actividad.
-
-### ¿Qué sucede después de un envío exitoso a MDG?
-
-La herramienta limpia el caso actual y deja la pantalla lista para procesar el siguiente.
-
-### ¿Cómo funciona el reenvío masivo?
-
-La app prepara todos los XML, los renumera secuencialmente, los divide en lotes internos y usa un token por lote para emitir varios comprobantes con pausas cortas entre ellos.
-
-### ¿Cada documento pide un token nuevo?
-
-No en el módulo masivo. Actualmente el sistema reutiliza un token por lote interno.
-
-### ¿Cuántos documentos procesa cada lote interno?
-
-Actualmente hasta 10 documentos por lote interno.
-
-### ¿Por qué existe una pausa entre documentos?
-
-Para reducir presión contra MDG y disminuir riesgo de bloqueo, saturación o comportamiento agresivo contra el servicio.
-
-### ¿Se puede procesar un lote muy grande?
-
-Sí, pero el tiempo final dependerá de:
-
-- cantidad de documentos
-- latencia real de MDG
-- pausa configurada
-- cantidad de rechazos o reintentos
-
-### ¿Las credenciales del cliente se guardan en el sistema?
-
-No como configuración estática del sitio. Se usan para la operación actual dentro del flujo de envío.
-
-### ¿Se puede usar esta herramienta en Testing y Producción?
-
-Sí. El sistema permite seleccionar ambos ambientes antes de enviar.
-
-## Observaciones finales
-
-- Este documento corresponde a una guía interna de configuración y uso.
-- Puede ser adaptado posteriormente a formato Word o PDF corporativo.
-- Se recomienda revisar este documento cada vez que cambie el flujo de MDG, la autenticación o el formato de salida.
-
------------------------------------------ FIN DEL DOCUMENTO -----------------------------------------
+De esta forma, la navegación dentro de GitBook será más cómoda para el usuario final.
