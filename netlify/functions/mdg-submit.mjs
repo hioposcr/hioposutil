@@ -1,4 +1,8 @@
 const NETLIFY_FUNCTION_PATH = '/.netlify/functions/mdg-submit';
+const DEFAULT_BATCH_DELAY_MS = 400;
+const MIN_BATCH_DELAY_MS = 300;
+const MAX_BATCH_DELAY_MS = 500;
+const MAX_BATCH_ITEMS = 10;
 
 const MDG_ENDPOINTS = {
   test: {
@@ -150,6 +154,169 @@ async function postJson({ endpoint, body, authorization }) {
   };
 }
 
+function resolveEnvironment(requestBody) {
+  return requestBody?.environment === 'prod'
+    ? 'prod'
+    : requestBody?.environment === 'test'
+    ? 'test'
+    : null;
+}
+
+function validatePayload(value) {
+  return isObject(value);
+}
+
+function resolveBatchDelayMs(requestBody) {
+  const requestedDelay = Number.parseInt(String(requestBody?.delayMs ?? DEFAULT_BATCH_DELAY_MS), 10);
+
+  if (!Number.isFinite(requestedDelay)) {
+    return DEFAULT_BATCH_DELAY_MS;
+  }
+
+  return Math.min(MAX_BATCH_DELAY_MS, Math.max(MIN_BATCH_DELAY_MS, requestedDelay));
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function requestToken({ environment, endpoints, credentials }) {
+  try {
+    const { response, parsedResponse } = await postJson({
+      endpoint: endpoints.tokenUrl,
+      body: {
+        tenantId: Number.parseInt(credentials.tenantId, 10),
+        password: credentials.password,
+      },
+    });
+
+    if (!response.ok) {
+      return {
+        error: jsonResponse(
+          response.status,
+          buildMdgError({
+            environment,
+            endpoint: endpoints.tokenUrl,
+            source: 'token',
+            status: response.status,
+            message: buildErrorMessage('MDG rechazó la obtención del token.', parsedResponse),
+            rawBody: parsedResponse.text || undefined,
+          })
+        ),
+      };
+    }
+
+    if (!isObject(parsedResponse.data) || typeof parsedResponse.data.access_token !== 'string') {
+      return {
+        error: jsonResponse(
+          502,
+          buildMdgError({
+            environment,
+            endpoint: endpoints.tokenUrl,
+            source: 'token',
+            status: 502,
+            message: 'MDG respondió el token con un formato inesperado.',
+            rawBody: parsedResponse.text || undefined,
+          })
+        ),
+      };
+    }
+
+    return {
+      tokenData: parsedResponse.data,
+    };
+  } catch (error) {
+    return {
+      error: jsonResponse(
+        502,
+        buildMdgError({
+          environment,
+          endpoint: endpoints.tokenUrl,
+          source: 'network',
+          status: 502,
+          message: `No se pudo solicitar el token a MDG. ${
+            error instanceof Error ? error.message : 'Error de red no identificado.'
+          }`.trim(),
+        })
+      ),
+    };
+  }
+}
+
+async function sendEmission({ environment, endpoints, accessToken, payload }) {
+  try {
+    const { response, parsedResponse } = await postJson({
+      endpoint: endpoints.emissionUrl,
+      body: payload,
+      authorization: `Bearer ${accessToken}`,
+    });
+
+    if (!response.ok) {
+      return {
+        success: false,
+        error: buildMdgError({
+          environment,
+          endpoint: endpoints.emissionUrl,
+          source: 'emision',
+          status: response.status,
+          message: buildErrorMessage('MDG rechazó el envío del comprobante.', parsedResponse),
+          rawBody: parsedResponse.text || undefined,
+        }),
+      };
+    }
+
+    if (!isObject(parsedResponse.data)) {
+      return {
+        success: false,
+        error: buildMdgError({
+          environment,
+          endpoint: endpoints.emissionUrl,
+          source: 'emision',
+          status: 502,
+          message: 'MDG respondió la emisión con un formato inesperado.',
+          rawBody: parsedResponse.text || undefined,
+        }),
+      };
+    }
+
+    return {
+      success: true,
+      response: parsedResponse.data,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: buildMdgError({
+        environment,
+        endpoint: endpoints.emissionUrl,
+        source: 'network',
+        status: 502,
+        message: `No se pudo remitir el comprobante a MDG. ${
+          error instanceof Error ? error.message : 'Error de red no identificado.'
+        }`.trim(),
+      }),
+    };
+  }
+}
+
+function buildResponseMeta({ environment, endpoints, tokenData }) {
+  return {
+    environment,
+    endpoints: {
+      functionUrl: NETLIFY_FUNCTION_PATH,
+      label: endpoints.label,
+    },
+    token: {
+      token_type: tokenData.token_type || 'Bearer',
+      expires_in: tokenData.expires_in || 0,
+      expires_on: tokenData.expires_on || '',
+    },
+    submittedAt: formatCostaRicaTimestamp(),
+  };
+}
+
 export async function handler(event) {
   if (event.httpMethod === 'OPTIONS') {
     return {
@@ -191,7 +358,7 @@ export async function handler(event) {
     );
   }
 
-  const environment = requestBody?.environment === 'prod' ? 'prod' : requestBody?.environment === 'test' ? 'test' : null;
+  const environment = resolveEnvironment(requestBody);
 
   if (!environment) {
     return jsonResponse(
@@ -202,19 +369,6 @@ export async function handler(event) {
         source: 'function',
         status: 400,
         message: 'Debes indicar un ambiente válido (`test` o `prod`).',
-      })
-    );
-  }
-
-  if (!isObject(requestBody?.payload)) {
-    return jsonResponse(
-      400,
-      buildMdgError({
-        environment,
-        endpoint: NETLIFY_FUNCTION_PATH,
-        source: 'function',
-        status: 400,
-        message: 'El payload corregido no tiene una estructura JSON válida.',
       })
     );
   }
@@ -236,118 +390,129 @@ export async function handler(event) {
   }
 
   const endpoints = MDG_ENDPOINTS[environment];
-  let tokenData;
+  const tokenResult = await requestToken({ environment, endpoints, credentials });
 
-  try {
-    const { response, parsedResponse } = await postJson({
-      endpoint: endpoints.tokenUrl,
-      body: {
-        tenantId: Number.parseInt(credentials.tenantId, 10),
-        password: credentials.password,
-      },
-    });
-
-    if (!response.ok) {
-      return jsonResponse(
-        response.status,
-        buildMdgError({
-          environment,
-          endpoint: endpoints.tokenUrl,
-          source: 'token',
-          status: response.status,
-          message: buildErrorMessage('MDG rechazó la obtención del token.', parsedResponse),
-          rawBody: parsedResponse.text || undefined,
-        })
-      );
-    }
-
-    if (!isObject(parsedResponse.data) || typeof parsedResponse.data.access_token !== 'string') {
-      return jsonResponse(
-        502,
-        buildMdgError({
-          environment,
-          endpoint: endpoints.tokenUrl,
-          source: 'token',
-          status: 502,
-          message: 'MDG respondió el token con un formato inesperado.',
-          rawBody: parsedResponse.text || undefined,
-        })
-      );
-    }
-
-    tokenData = parsedResponse.data;
-  } catch (error) {
-    return jsonResponse(
-      502,
-      buildMdgError({
-        environment,
-        endpoint: endpoints.tokenUrl,
-        source: 'network',
-        status: 502,
-        message: `No se pudo solicitar el token a MDG. ${error instanceof Error ? error.message : 'Error de red no identificado.'}`.trim(),
-      })
-    );
+  if (tokenResult.error) {
+    return tokenResult.error;
   }
 
-  try {
-    const { response, parsedResponse } = await postJson({
-      endpoint: endpoints.emissionUrl,
-      body: requestBody.payload,
-      authorization: `Bearer ${tokenData.access_token}`,
-    });
+  const { tokenData } = tokenResult;
 
-    if (!response.ok) {
+  if (Array.isArray(requestBody?.payloads)) {
+    if (requestBody.payloads.length === 0) {
       return jsonResponse(
-        response.status,
+        400,
         buildMdgError({
           environment,
-          endpoint: endpoints.emissionUrl,
-          source: 'emision',
-          status: response.status,
-          message: buildErrorMessage('MDG rechazó el envío del comprobante.', parsedResponse),
-          rawBody: parsedResponse.text || undefined,
+          endpoint: NETLIFY_FUNCTION_PATH,
+          source: 'function',
+          status: 400,
+          message: 'El lote debe contener al menos un payload para enviarse.',
         })
       );
     }
 
-    if (!isObject(parsedResponse.data)) {
+    if (requestBody.payloads.length > MAX_BATCH_ITEMS) {
       return jsonResponse(
-        502,
+        400,
         buildMdgError({
           environment,
-          endpoint: endpoints.emissionUrl,
-          source: 'emision',
-          status: 502,
-          message: 'MDG respondió la emisión con un formato inesperado.',
-          rawBody: parsedResponse.text || undefined,
+          endpoint: NETLIFY_FUNCTION_PATH,
+          source: 'function',
+          status: 400,
+          message: `Cada lote puede incluir como máximo ${MAX_BATCH_ITEMS} documentos para evitar timeouts en la Function.`,
         })
       );
+    }
+
+    const invalidItem = requestBody.payloads.find(
+      (item) => !item || typeof item.id !== 'string' || !validatePayload(item.payload)
+    );
+
+    if (invalidItem) {
+      return jsonResponse(
+        400,
+        buildMdgError({
+          environment,
+          endpoint: NETLIFY_FUNCTION_PATH,
+          source: 'function',
+          status: 400,
+          message: 'Cada item del lote debe incluir `id` y `payload` con estructura JSON válida.',
+        })
+      );
+    }
+
+    const delayMs = resolveBatchDelayMs(requestBody);
+    const results = [];
+
+    for (let index = 0; index < requestBody.payloads.length; index += 1) {
+      const item = requestBody.payloads[index];
+      const emissionResult = await sendEmission({
+        environment,
+        endpoints,
+        accessToken: tokenData.access_token,
+        payload: item.payload,
+      });
+
+      if (emissionResult.success) {
+        results.push({
+          id: item.id,
+          success: true,
+          response: emissionResult.response,
+        });
+      } else {
+        results.push({
+          id: item.id,
+          success: false,
+          error: emissionResult.error,
+        });
+      }
+
+      if (index < requestBody.payloads.length - 1) {
+        await delay(delayMs);
+      }
     }
 
     return jsonResponse(200, {
-      environment,
-      endpoints: {
-        functionUrl: NETLIFY_FUNCTION_PATH,
-        label: endpoints.label,
+      ...buildResponseMeta({ environment, endpoints, tokenData }),
+      mode: 'batch',
+      delayMs,
+      batchSize: requestBody.payloads.length,
+      results,
+      summary: {
+        total: results.length,
+        success: results.filter((item) => item.success).length,
+        error: results.filter((item) => !item.success).length,
       },
-      token: {
-        token_type: tokenData.token_type || 'Bearer',
-        expires_in: tokenData.expires_in || 0,
-        expires_on: tokenData.expires_on || '',
-      },
-      response: parsedResponse.data,
-      submittedAt: formatCostaRicaTimestamp(),
     });
-  } catch (error) {
+  }
+
+  if (!validatePayload(requestBody?.payload)) {
     return jsonResponse(
-      502,
+      400,
       buildMdgError({
         environment,
-        endpoint: endpoints.emissionUrl,
-        source: 'network',
-        status: 502,
-        message: `No se pudo remitir el comprobante a MDG. ${error instanceof Error ? error.message : 'Error de red no identificado.'}`.trim(),
+        endpoint: NETLIFY_FUNCTION_PATH,
+        source: 'function',
+        status: 400,
+        message: 'El payload corregido no tiene una estructura JSON válida.',
       })
     );
   }
+
+  const singleEmission = await sendEmission({
+    environment,
+    endpoints,
+    accessToken: tokenData.access_token,
+    payload: requestBody.payload,
+  });
+
+  if (!singleEmission.success) {
+    return jsonResponse(singleEmission.error.status ?? 502, singleEmission.error);
+  }
+
+  return jsonResponse(200, {
+    ...buildResponseMeta({ environment, endpoints, tokenData }),
+    response: singleEmission.response,
+  });
 }

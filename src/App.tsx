@@ -2,6 +2,7 @@ import { startTransition, useEffect, useRef, useState } from 'react';
 import { Toaster, toast } from 'sonner';
 import { AnimatePresence, motion } from 'framer-motion';
 import Header from './components/Header';
+import ModuleSwitcher from './components/ModuleSwitcher';
 import FileUploadZone from './components/FileUploadZone';
 import ManualInputPanel from './components/ManualInputPanel';
 import ReissueSettingsPanel from './components/ReissueSettingsPanel';
@@ -15,6 +16,7 @@ import ComparisonPanel from './components/ComparisonPanel';
 import ActionButtons from './components/ActionButtons';
 import ResultPanel from './components/ResultPanel';
 import WarningsCard from './components/WarningsCard';
+import BulkResendModule from './components/BulkResendModule';
 import { parseOriginalDocumentXml } from './parsers/xmlParser';
 import { parseRejectedNoteInput } from './parsers/noteJsonParser';
 import {
@@ -34,6 +36,7 @@ import {
   extractTerminalFromConsecutive,
   suggestNextTerminal,
 } from './utils/consecutive';
+import { validateMdgSettings } from './utils/mdgValidation';
 import {
   clearAuthSession,
   createAuthSession,
@@ -47,6 +50,7 @@ import {
 } from './utils/authSession';
 import { formatCurrency } from './utils/number';
 import type {
+  AppModule,
   AppState,
   ComparisonAnalysis,
   CorrectionResult,
@@ -123,6 +127,7 @@ export default function App() {
   const [comparisonAnalysis, setComparisonAnalysis] = useState<ComparisonAnalysis | null>(null);
   const [correctionDraft, setCorrectionDraft] = useState<CorrectionResult | null>(null);
   const [generatedResult, setGeneratedResult] = useState<CorrectionResult | null>(null);
+  const [activeModule, setActiveModule] = useState<AppModule>('single');
   const [manualMode, setManualMode] = useState(false);
   const [manualForm, setManualForm] = useState<ManualDocumentForm>(INITIAL_MANUAL_FORM);
   const [manualErrors, setManualErrors] = useState<ManualDocumentErrors>({});
@@ -139,6 +144,7 @@ export default function App() {
   const [loginError, setLoginError] = useState('');
   const [showSessionWarning, setShowSessionWarning] = useState(false);
   const [sessionRemainingMs, setSessionRemainingMs] = useState(0);
+  const [moduleRenderVersion, setModuleRenderVersion] = useState(0);
   const lastSessionSyncRef = useRef(0);
   const resetNextCaseTimerRef = useRef<number | null>(null);
   const authSessionRef = useRef<AuthSession | null>(authSession);
@@ -215,6 +221,8 @@ export default function App() {
     setSessionRemainingMs(0);
     setLoginError('');
     setLoginForm(INITIAL_LOGIN_FORM);
+    setActiveModule('single');
+    setModuleRenderVersion((current) => current + 1);
     resetCaseState();
 
     if (reason === 'expired') {
@@ -419,20 +427,6 @@ export default function App() {
     if (appState === 'sent') {
       setAppState('completed');
     }
-  };
-
-  const validateMdgSettings = (settings: MdgSettings): MdgSettingsErrors => {
-    const errors: MdgSettingsErrors = {};
-
-    if (!/^\d+$/.test(settings.tenantId.trim())) {
-      errors.tenantId = 'El tenant ID debe contener solo dígitos.';
-    }
-
-    if (!settings.password.trim()) {
-      errors.password = 'La contraseña es obligatoria para solicitar el token.';
-    }
-
-    return errors;
   };
 
   const resolveOriginalDocument = (): OriginalDocumentData => {
@@ -733,179 +727,194 @@ export default function App() {
       <Header currentUser={authSession?.username ?? null} onLogout={() => logoutUser('manual')} />
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8 space-y-6">
-        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-          <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
-            <div>
-              <h2 className="text-sm font-semibold text-slate-800">Carga de documentos</h2>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Sube el XML original y la nota de crédito en JSON requerido o XML directo
-              </p>
-            </div>
-            {allInputsReady && (
-              <motion.span
-                initial={{ opacity: 0, scale: 0.8 }}
-                animate={{ opacity: 1, scale: 1 }}
-                className="text-[10px] font-semibold uppercase tracking-wider text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full"
-              >
-                Listos
-              </motion.span>
-            )}
-          </div>
+        <ModuleSwitcher activeModule={activeModule} onChange={setActiveModule} />
 
-          <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-5">
-            <FileUploadZone
-              label="Documento original (XML)"
-              description="Factura o tiquete electrónico aceptado por Hacienda · .xml"
-              accept=".xml"
-              fileType="xml"
-              file={xmlFile}
-              onFileSelected={handleOriginalXmlSelected}
-              onClear={() => {
-                setXmlFile(null);
-                setXmlOriginalDocument(null);
-                const nextReady = Boolean(rejectedNote && manualMode && manualOriginalDocument);
-                resetWorkflow(nextReady ? 'files_loaded' : 'idle');
-              }}
-            />
-            <FileUploadZone
-              label="Nota de crédito (JSON o XML)"
-              description="Acepta el JSON requerido por MDG o XML directo de la nota · .json, .xml"
-              accept=".json,.xml"
-              fileType="note"
-              file={noteFile}
-              onFileSelected={handleRejectedJsonSelected}
-              onClear={() => {
-                setNoteFile(null);
-                setRejectedNote(null);
-                setReissueSettings(INITIAL_REISSUE_SETTINGS);
-                setReissueErrors({});
-                resetWorkflow('idle');
-              }}
-            />
-          </div>
-
-          <div className="px-5 pb-5">
-            <div className="flex items-center gap-3 mb-3">
-              <div className="flex-1 h-px bg-slate-100" />
-              <span className="text-xs text-slate-400 font-medium">o ingresa manualmente</span>
-              <div className="flex-1 h-px bg-slate-100" />
-            </div>
-            <ManualInputPanel
-              active={manualMode}
-              value={manualForm}
-              errors={manualErrors}
-              onToggle={() => {
-                const nextManualMode = !manualMode;
-                setManualMode(nextManualMode);
-                if (nextManualMode) {
-                  syncManualDocument(manualForm, nextManualMode);
-                } else {
-                  setManualErrors({});
-                  const nextReady = Boolean(rejectedNote && xmlOriginalDocument);
-                  resetWorkflow(nextReady ? 'files_loaded' : 'idle');
-                }
-              }}
-              onChange={(field, value) => {
-                const nextForm = { ...manualForm, [field]: value };
-                setManualForm(nextForm);
-
-                if (manualMode) {
-                  syncManualDocument(nextForm, true);
-                }
-              }}
-            />
-
-            <ReissueSettingsPanel
-              value={reissueSettings.terminal}
-              error={reissueErrors.terminal}
-              originalTerminal={currentNoteTerminal}
-              suggestedTerminal={suggestedTerminal}
-              onChange={(value) => {
-                syncReissueSettings({ terminal: value });
-              }}
-            />
-          </div>
-        </div>
-
-        <AnimatePresence>
-          {showSummaries && documentSummary && creditNoteSummary && (
-            <motion.div
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-              className="grid grid-cols-1 lg:grid-cols-2 gap-6"
-            >
-              <DocumentSummaryCard data={documentSummary} />
-              <CreditNoteSummaryCard data={creditNoteSummary} />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        <MdgConfigPanel
-          value={mdgSettings}
-          errors={mdgErrors}
-          disabled={appState === 'sending'}
-          onChange={syncMdgSettings}
-        />
-
-        <ActionButtons
-          appState={appState}
-          onAnalyze={handleAnalyze}
-          onRecalculate={handleRecalculate}
-          onGenerate={handleGenerate}
-          onExport={handleExport}
-          onSendToMdg={handleSendToMdg}
-        />
-
-        <AnimatePresence>
-          {showComparison && comparisonResult && (
-            <motion.div
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-            >
-              <ComparisonPanel data={comparisonResult} />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        <AnimatePresence>
-          {showResult && generatedResult && (
-            <motion.div
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-            >
-              <ResultPanel
-                result={generatedResult}
-                totalCorregidoLabel={formatCurrency(
-                  generatedResult.totalCorregido,
-                  rejectedNote?.moneda ?? 'CRC'
+        {activeModule === 'single' ? (
+          <>
+            <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-800">Carga de documentos</h2>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Sube el XML original y la nota de crédito en JSON requerido o XML directo
+                  </p>
+                </div>
+                {allInputsReady && (
+                  <motion.span
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="text-[10px] font-semibold uppercase tracking-wider text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full"
+                  >
+                    Listos
+                  </motion.span>
                 )}
-                onDownloadJson={() => {
-                  exportJsonOnly(generatedResult);
-                  toast.success('JSON requerido descargado');
-                }}
-                onDownloadXml={() => {
-                  exportXmlOnly(generatedResult);
-                  toast.success('XML corregido descargado');
-                }}
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
+              </div>
 
-        <AnimatePresence>
-          {(mdgSubmission || mdgSubmissionError) && (
-            <motion.div
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-            >
-              <MdgSubmissionPanel success={mdgSubmission} error={mdgSubmissionError} />
-            </motion.div>
-          )}
-        </AnimatePresence>
+              <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-5">
+                <FileUploadZone
+                  label="Documento original (XML)"
+                  description="Factura o tiquete electrónico aceptado por Hacienda · .xml"
+                  accept=".xml"
+                  fileType="xml"
+                  file={xmlFile}
+                  onFileSelected={handleOriginalXmlSelected}
+                  onClear={() => {
+                    setXmlFile(null);
+                    setXmlOriginalDocument(null);
+                    const nextReady = Boolean(rejectedNote && manualMode && manualOriginalDocument);
+                    resetWorkflow(nextReady ? 'files_loaded' : 'idle');
+                  }}
+                />
+                <FileUploadZone
+                  label="Nota de crédito (JSON o XML)"
+                  description="Acepta el JSON requerido por MDG o XML directo de la nota · .json, .xml"
+                  accept=".json,.xml"
+                  fileType="note"
+                  file={noteFile}
+                  onFileSelected={handleRejectedJsonSelected}
+                  onClear={() => {
+                    setNoteFile(null);
+                    setRejectedNote(null);
+                    setReissueSettings(INITIAL_REISSUE_SETTINGS);
+                    setReissueErrors({});
+                    resetWorkflow('idle');
+                  }}
+                />
+              </div>
+
+              <div className="px-5 pb-5">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="flex-1 h-px bg-slate-100" />
+                  <span className="text-xs text-slate-400 font-medium">o ingresa manualmente</span>
+                  <div className="flex-1 h-px bg-slate-100" />
+                </div>
+                <ManualInputPanel
+                  active={manualMode}
+                  value={manualForm}
+                  errors={manualErrors}
+                  onToggle={() => {
+                    const nextManualMode = !manualMode;
+                    setManualMode(nextManualMode);
+                    if (nextManualMode) {
+                      syncManualDocument(manualForm, nextManualMode);
+                    } else {
+                      setManualErrors({});
+                      const nextReady = Boolean(rejectedNote && xmlOriginalDocument);
+                      resetWorkflow(nextReady ? 'files_loaded' : 'idle');
+                    }
+                  }}
+                  onChange={(field, value) => {
+                    const nextForm = { ...manualForm, [field]: value };
+                    setManualForm(nextForm);
+
+                    if (manualMode) {
+                      syncManualDocument(nextForm, true);
+                    }
+                  }}
+                />
+
+                <ReissueSettingsPanel
+                  value={reissueSettings.terminal}
+                  error={reissueErrors.terminal}
+                  originalTerminal={currentNoteTerminal}
+                  suggestedTerminal={suggestedTerminal}
+                  onChange={(value) => {
+                    syncReissueSettings({ terminal: value });
+                  }}
+                />
+              </div>
+            </div>
+
+            <AnimatePresence>
+              {showSummaries && documentSummary && creditNoteSummary && (
+                <motion.div
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                  className="grid grid-cols-1 lg:grid-cols-2 gap-6"
+                >
+                  <DocumentSummaryCard data={documentSummary} />
+                  <CreditNoteSummaryCard data={creditNoteSummary} />
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <MdgConfigPanel
+              value={mdgSettings}
+              errors={mdgErrors}
+              disabled={appState === 'sending'}
+              onChange={syncMdgSettings}
+            />
+
+            <ActionButtons
+              appState={appState}
+              onAnalyze={handleAnalyze}
+              onRecalculate={handleRecalculate}
+              onGenerate={handleGenerate}
+              onExport={handleExport}
+              onSendToMdg={handleSendToMdg}
+            />
+
+            <AnimatePresence>
+              {showComparison && comparisonResult && (
+                <motion.div
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                >
+                  <ComparisonPanel data={comparisonResult} />
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+              {showResult && generatedResult && (
+                <motion.div
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                >
+                  <ResultPanel
+                    result={generatedResult}
+                    totalCorregidoLabel={formatCurrency(
+                      generatedResult.totalCorregido,
+                      rejectedNote?.moneda ?? 'CRC'
+                    )}
+                    onDownloadJson={() => {
+                      exportJsonOnly(generatedResult);
+                      toast.success('JSON requerido descargado');
+                    }}
+                    onDownloadXml={() => {
+                      exportXmlOnly(generatedResult);
+                      toast.success('XML corregido descargado');
+                    }}
+                  />
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+              {(mdgSubmission || mdgSubmissionError) && (
+                <motion.div
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                >
+                  <MdgSubmissionPanel success={mdgSubmission} error={mdgSubmissionError} />
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </>
+        ) : (
+          <BulkResendModule
+            key={`bulk-${moduleRenderVersion}`}
+            mdgSettings={mdgSettings}
+            mdgErrors={mdgErrors}
+            onMdgSettingsChange={syncMdgSettings}
+            onMdgErrorsChange={setMdgErrors}
+            onSessionActivity={() => touchSession(true)}
+          />
+        )}
 
         <WarningsCard />
       </main>

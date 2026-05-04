@@ -23,7 +23,7 @@ export default function Header({ currentUser, onLogout }: Props) {
               </span>
             </div>
             <p className="text-sm text-slate-500 mt-0.5">
-              Corrección de notas de crédito rechazadas por diferencias de redondeo
+              Corrección individual y reenvío masivo de comprobantes hacia MDG
             </p>
           </div>
         </div>

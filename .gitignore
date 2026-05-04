@@ -22,3 +22,7 @@ dist-ssr
 *.sw?
 .env
 .bolt
+
+# Local Netlify folder
+.netlify
+deno.lock

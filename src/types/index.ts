@@ -10,6 +10,8 @@ export type AppState =
   | 'sending'
   | 'sent';
 
+export type AppModule = 'single' | 'bulk';
+
 export type FileStatus = 'idle' | 'loading' | 'success' | 'error';
 export type FileType = 'xml' | 'json' | 'note';
 
@@ -205,6 +207,55 @@ export interface ReissueSettingsErrors {
   terminal?: string;
 }
 
+export interface BulkResendSettings {
+  terminal: string;
+  startingSequence: string;
+  regenerateSecurityCode: boolean;
+  delayMs: string;
+}
+
+export interface BulkResendSettingsErrors {
+  terminal?: string;
+  startingSequence?: string;
+  delayMs?: string;
+}
+
+export interface BulkSourceDocumentItem {
+  id: string;
+  fileName: string;
+  fileSizeLabel: string;
+  document: OriginalDocumentData;
+}
+
+export interface BulkUploadIssue {
+  id: string;
+  fileName: string;
+  fileSizeLabel: string;
+  message: string;
+}
+
+export type BulkQueueStatus = 'ready' | 'processing' | 'success' | 'error';
+
+export interface BulkPreparedDocument {
+  id: string;
+  fileName: string;
+  fileSizeLabel: string;
+  documentType: string;
+  originalConsecutive: string;
+  originalKey: string;
+  regeneratedConsecutive: string;
+  regeneratedKey: string;
+  regeneratedFechaEmision: string;
+  sequenceNumber: number;
+  totalComprobante: number;
+  xmlText: string;
+  payload: JsonValue;
+  status: BulkQueueStatus;
+  executionId?: number;
+  responseKey?: string;
+  errorMessage?: string;
+}
+
 export type MdgEnvironment = 'test' | 'prod';
 
 export interface MdgSettings {
@@ -245,6 +296,21 @@ export interface MdgSubmissionSuccess {
   endpoints: MdgEndpoints;
   token: MdgTokenMeta;
   response: MdgSubmissionResponse;
+  submittedAt: string;
+}
+
+export interface MdgBatchSubmissionItem {
+  id: string;
+  success: boolean;
+  response?: MdgSubmissionResponse;
+  error?: MdgSubmissionError;
+}
+
+export interface MdgBatchSubmissionSuccess {
+  environment: MdgEnvironment;
+  endpoints: MdgEndpoints;
+  token: MdgTokenMeta;
+  results: MdgBatchSubmissionItem[];
   submittedAt: string;
 }
 
