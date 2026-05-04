@@ -14,6 +14,7 @@ La aplicación permite:
 - exportar JSON y XML corregidos
 - reenviar el comprobante a MDG usando una Netlify Function para evitar CORS
 - operar con login interno y sesión persistente para personal de soporte
+- procesar lotes de XML para reenvío masivo con numeración secuencial
 
 ## Stack
 
@@ -35,6 +36,11 @@ La aplicación permite:
 - Parseo robusto con validaciones y manejo de errores
 - Ajuste automático de diferencias pequeñas de redondeo
 - Regeneración de consecutivo, clave y fecha de emisión
+- Módulo de reenvío masivo para múltiples XML
+- Renumeración secuencial por lote usando número inicial configurable
+- Reutilización de token MDG por lote interno
+- Pausa configurable entre 300 y 500 ms para reducir presión sobre MDG
+- Paginación en cola de procesamiento para lotes grandes
 - Exportación de `JSON` y `XML`
 - Envío a MDG por ambiente `Testing` o `Producción`
 - Uso de `tenantId` y `password` por cliente sin dejarlos fijos en el sitio
@@ -46,17 +52,24 @@ La aplicación permite:
 flowchart LR
     U[Usuario soporte] --> L[Login interno]
     L --> FE[Frontend React]
-    FE --> P1[Parseo XML original]
-    FE --> P2[Parseo nota JSON o XML]
+    FE --> M{Módulo}
+    M --> S1[Corrección individual]
+    M --> S2[Reenvío masivo]
+    S1 --> P1[Parseo XML original]
+    S1 --> P2[Parseo nota JSON o XML]
     P1 --> A[Análisis de diferencias]
     P2 --> A
     A --> R[Recálculo y regeneración]
     R --> X[Exportación JSON/XML]
     R --> NF[Netlify Function mdg-submit]
-    NF --> T[Token MDG]
+    S2 --> B1[Parseo múltiple de XML]
+    B1 --> B2[Renumeración secuencial]
+    B2 --> NF
+    NF --> T[Token MDG por lote]
     T --> E[Emisión MDG]
     E --> FE
-    FE --> C[Limpiar caso exitoso]
+    FE --> Q[Cola paginada]
+    Q --> C[Limpiar caso exitoso o revisar lote]
     C --> U
 ```
 
@@ -96,6 +109,26 @@ flowchart TD
     J --> K[Exportar o enviar a MDG]
 ```
 
+## Flujo de reenvío masivo
+
+```mermaid
+flowchart TD
+    A[Subir múltiples XML] --> B[Validar y parsear documentos]
+    B --> C[Definir terminal]
+    C --> D[Definir número inicial]
+    D --> E[Definir pausa entre 300 y 500 ms]
+    E --> F[Opcional: regenerar seguridad de clave]
+    F --> G[Preparar lote]
+    G --> H[Renumerar consecutivos secuencialmente]
+    H --> I[Regenerar clave y fecha]
+    I --> J[Construir payload MDG por documento]
+    J --> K[Dividir en lotes internos]
+    K --> L[Solicitar un token por lote]
+    L --> M[Enviar documentos con pausa configurada]
+    M --> N[Actualizar cola paginada]
+    N --> O[Reintentar fallidos o continuar]
+```
+
 ## Flujo de envío a MDG
 
 ```mermaid
@@ -109,11 +142,11 @@ sequenceDiagram
     S->>FE: Ingresa tenantId, password y ambiente
     S->>FE: Presiona Enviar a MDG
     FE->>NF: POST /.netlify/functions/mdg-submit
-    Note over FE,NF: Se envían environment, tenantId, password y payload corregido
+    Note over FE,NF: En individual se envía un payload; en masivo se envía un grupo interno
     NF->>MDG: Solicita token
     MDG-->>NF: access_token
-    NF->>MDG: Envía comprobante corregido
-    MDG-->>NF: Respuesta de emisión
+    NF->>MDG: Envía comprobante(s) reutilizando el mismo token del lote
+    MDG-->>NF: Respuesta por cada emisión
     NF-->>FE: Resultado estructurado o error
     FE-->>S: Muestra éxito o detalle del error
     FE-->>S: Limpia el formulario si el envío fue exitoso
@@ -134,6 +167,16 @@ netlify/
 netlify.toml
 netlify.env.example
 ```
+
+Componentes y servicios nuevos relevantes:
+
+- `src/components/ModuleSwitcher.tsx`
+- `src/components/BulkUploadPanel.tsx`
+- `src/components/BulkReissueSettingsPanel.tsx`
+- `src/components/BulkQueuePanel.tsx`
+- `src/components/BulkResendModule.tsx`
+- `src/services/bulkResendService.ts`
+- `src/utils/mdgValidation.ts`
 
 ## Requisitos
 
@@ -177,20 +220,40 @@ Importante:
 
 ## Paso a paso de uso
 
+### Corrección individual
+
 1. Ingresar con el login interno de soporte.
-2. Cargar el XML del documento original.
-3. Cargar la nota de crédito rechazada en JSON o XML.
-4. Revisar los resúmenes generados por la app.
-5. Configurar la nueva terminal de reemisión.
-6. Presionar `Analizar documento`.
-7. Presionar `Recalcular ajuste`.
-8. Presionar `Generar versión corregida`.
-9. Revisar el preview JSON/XML.
-10. Opcionalmente exportar archivos.
-11. Seleccionar ambiente `Testing` o `Producción`.
-12. Ingresar `tenantId` y `password` del cliente.
-13. Presionar `Enviar a MDG`.
-14. Si el envío es exitoso, la app limpia el caso actual para preparar el siguiente.
+2. Seleccionar el módulo `Corrección individual`.
+3. Cargar el XML del documento original.
+4. Cargar la nota de crédito rechazada en JSON o XML.
+5. Revisar los resúmenes generados por la app.
+6. Configurar la nueva terminal de reemisión.
+7. Presionar `Analizar documento`.
+8. Presionar `Recalcular ajuste`.
+9. Presionar `Generar versión corregida`.
+10. Revisar el preview JSON/XML.
+11. Opcionalmente exportar archivos.
+12. Seleccionar ambiente `Testing` o `Producción`.
+13. Ingresar `tenantId` y `password` del cliente.
+14. Presionar `Enviar a MDG`.
+15. Si el envío es exitoso, la app limpia el caso actual para preparar el siguiente.
+
+### Reenvío masivo
+
+1. Ingresar con el login interno de soporte.
+2. Seleccionar el módulo `Reenvío masivo`.
+3. Cargar múltiples XML.
+4. Definir nueva terminal.
+5. Definir número inicial del consecutivo.
+6. Definir pausa entre envíos de `300` a `500 ms`.
+7. Elegir si se regenera o no la seguridad de la clave.
+8. Seleccionar ambiente `Testing` o `Producción`.
+9. Ingresar `tenantId` y `password` del cliente.
+10. Presionar `Preparar lote`.
+11. Revisar la cola paginada.
+12. Presionar `Enviar lote a MDG`.
+13. Revisar éxitos y errores por documento.
+14. Reintentar fallidos si aplica.
 15. Cerrar sesión manualmente desde el encabezado cuando corresponda.
 
 ## Despliegue en Netlify
@@ -233,6 +296,9 @@ El archivo [netlify.env.example](./netlify.env.example) incluye esos nombres com
 - La herramienta tiene login interno obligatorio antes de habilitar las acciones de negocio.
 - La sesión permanece disponible mientras exista actividad del usuario y se invalida por inactividad prolongada.
 - Existe advertencia de vencimiento de sesión antes del cierre automático.
+- El módulo masivo reutiliza un token por lote interno en vez de pedir un token por documento.
+- La Function aplica una pausa configurable entre 300 y 500 ms entre emisiones del lote.
+- Actualmente cada lote interno procesa hasta 10 documentos para reducir riesgo de timeout en la Function.
 - Si más adelante se requiere mayor seguridad, el siguiente paso recomendado es reemplazar el login fijo y la captura manual por autenticación real y almacenamiento seguro de credenciales por cliente.
 
 ## Consideraciones fiscales
@@ -264,6 +330,24 @@ Revisar:
 - ambiente correcto
 - estructura final del documento
 - respuesta mostrada en el panel de error
+
+### El lote masivo va lento
+
+Revisar:
+
+- tamaño total del lote
+- pausa configurada entre envíos
+- latencia real de MDG
+- cantidad de errores que obliguen a reintentos
+
+### El lote masivo no avanza completo
+
+Revisar:
+
+- si la Function devolvió un error para el lote actual
+- si el documento excede validaciones de MDG
+- si hubo timeout o error de red en el grupo interno
+- la cola paginada para identificar exactamente dónde quedó cada documento
 
 ### La sesión se cerró sola
 
