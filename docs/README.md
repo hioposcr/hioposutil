@@ -370,13 +370,3 @@ Sí. La revisión de resultados permite identificar qué documentos necesitan un
 ## Cierre
 
 Este manual está orientado al aprendizaje y uso diario de `hioposutil` por parte del personal de soporte y usuarios operativos.
-
-Para GitBook Sync, este documento ya puede utilizarse como una página principal de manual. Si más adelante se desea una experiencia más ordenada, se recomienda dividirlo en varias páginas, por ejemplo:
-
-- Introducción
-- Corrección individual
-- Reenvío masivo
-- Configuración MDG
-- Preguntas frecuentes
-
-De esta forma, la navegación dentro de GitBook será más cómoda para el usuario final.
