@@ -1,0 +1,43 @@
+<svg width="1200" height="620" viewBox="0 0 1200 620" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="620" rx="24" fill="#F8FAFC"/>
+  <text x="60" y="72" fill="#0F172A" font-family="Segoe UI, Arial, sans-serif" font-size="34" font-weight="700">Mapa general de uso</text>
+  <text x="60" y="108" fill="#475569" font-family="Segoe UI, Arial, sans-serif" font-size="18">Una vista rápida para saber por dónde empezar.</text>
+
+  <rect x="60" y="160" width="220" height="120" rx="18" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+  <text x="90" y="205" fill="#1D4ED8" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="700">1. Ingresar</text>
+  <text x="90" y="238" fill="#334155" font-family="Segoe UI, Arial, sans-serif" font-size="16">Abrir la herramienta</text>
+  <text x="90" y="262" fill="#334155" font-family="Segoe UI, Arial, sans-serif" font-size="16">e iniciar sesión.</text>
+
+  <rect x="340" y="160" width="240" height="120" rx="18" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+  <text x="370" y="205" fill="#1D4ED8" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="700">2. Elegir módulo</text>
+  <text x="370" y="238" fill="#334155" font-family="Segoe UI, Arial, sans-serif" font-size="16">Corrección individual</text>
+  <text x="370" y="262" fill="#334155" font-family="Segoe UI, Arial, sans-serif" font-size="16">o Reenvío masivo.</text>
+
+  <rect x="640" y="160" width="220" height="120" rx="18" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+  <text x="670" y="205" fill="#1D4ED8" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="700">3. Preparar datos</text>
+  <text x="670" y="238" fill="#334155" font-family="Segoe UI, Arial, sans-serif" font-size="16">Archivos, terminal</text>
+  <text x="670" y="262" fill="#334155" font-family="Segoe UI, Arial, sans-serif" font-size="16">y configuración MDG.</text>
+
+  <rect x="920" y="160" width="220" height="120" rx="18" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+  <text x="950" y="205" fill="#1D4ED8" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="700">4. Revisar</text>
+  <text x="950" y="238" fill="#334155" font-family="Segoe UI, Arial, sans-serif" font-size="16">Validar el resultado</text>
+  <text x="950" y="262" fill="#334155" font-family="Segoe UI, Arial, sans-serif" font-size="16">y enviar si aplica.</text>
+
+  <path d="M280 220H340" stroke="#94A3B8" stroke-width="4" stroke-linecap="round"/>
+  <path d="M580 220H640" stroke="#94A3B8" stroke-width="4" stroke-linecap="round"/>
+  <path d="M860 220H920" stroke="#94A3B8" stroke-width="4" stroke-linecap="round"/>
+
+  <rect x="130" y="350" width="400" height="180" rx="22" fill="#DBEAFE"/>
+  <text x="165" y="396" fill="#1E3A8A" font-family="Segoe UI, Arial, sans-serif" font-size="24" font-weight="700">Si tiene 1 documento</text>
+  <text x="165" y="435" fill="#1E293B" font-family="Segoe UI, Arial, sans-serif" font-size="17">Use Corrección individual para:</text>
+  <text x="165" y="466" fill="#1E293B" font-family="Segoe UI, Arial, sans-serif" font-size="16">• analizar</text>
+  <text x="165" y="492" fill="#1E293B" font-family="Segoe UI, Arial, sans-serif" font-size="16">• recalcular</text>
+  <text x="165" y="518" fill="#1E293B" font-family="Segoe UI, Arial, sans-serif" font-size="16">• generar la versión corregida</text>
+
+  <rect x="670" y="350" width="400" height="180" rx="22" fill="#DCFCE7"/>
+  <text x="705" y="396" fill="#166534" font-family="Segoe UI, Arial, sans-serif" font-size="24" font-weight="700">Si tiene muchos XML</text>
+  <text x="705" y="435" fill="#1E293B" font-family="Segoe UI, Arial, sans-serif" font-size="17">Use Reenvío masivo para:</text>
+  <text x="705" y="466" fill="#1E293B" font-family="Segoe UI, Arial, sans-serif" font-size="16">• renumerar</text>
+  <text x="705" y="492" fill="#1E293B" font-family="Segoe UI, Arial, sans-serif" font-size="16">• cambiar terminal</text>
+  <text x="705" y="518" fill="#1E293B" font-family="Segoe UI, Arial, sans-serif" font-size="16">• enviar lotes controlados</text>
+</svg>

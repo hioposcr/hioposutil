@@ -6,6 +6,8 @@ Este espacio reúne la documentación operativa de `hioposutil`, una herramienta
 
 La documentación fue organizada por páginas para que la consulta sea más simple dentro de GitBook.
 
+![Mapa general de uso](assets/mapa-general.svg)
+
 ## ¿Qué puede hacer la herramienta?
 
 `hioposutil` permite trabajar en dos escenarios principales:
@@ -35,10 +37,21 @@ Antes de comenzar, se recomienda contar con:
 - credenciales MDG del cliente correcto
 - claridad sobre si el trabajo se hará como corrección individual o como reenvío masivo
 
+## Si es su primera vez
+
+Se recomienda leer las páginas en este orden:
+
+1. `Inicio rápido`
+2. `Acceso y pantalla principal`
+3. `Corrección individual` o `Reenvío masivo`, según el caso
+4. `Configuración MDG`
+5. `Mensajes y resultados`
+
 ## Estructura del manual
 
 Este manual está dividido en las siguientes páginas:
 
+- inicio rápido
 - acceso y pantalla principal
 - corrección individual
 - reenvío masivo
